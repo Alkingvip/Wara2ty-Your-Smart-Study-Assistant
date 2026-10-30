@@ -1,0 +1,8 @@
+{
+  "name": "Wara2ty – ورقتي",
+  "description": "مساعد دراسي ذكي يحول صور المحاضرات والملاحظات المكتوبة بخط اليد إلى نصوص رقمية وترجمة وملخصات واختبارات تفاعلية.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
