@@ -1,0 +1,6 @@
+{
+  "summary":  "خطة هندسية جذرية للقضاء على خطأ 503 (High Demand / UNAVAILABLE) عبر ضبط ThinkingLevel.LOW، والتبديل الفوري متعدد المسارات، وتخفيف حمل Constrained Decoding، وإعادة المحاولة التلقائية في الواجهة والخادم.",
+  "updatedAt":  "2026-11-10T09:35:36.509867158Z",
+  "requestFeedback":  true,
+  "userFacing":  true
+}

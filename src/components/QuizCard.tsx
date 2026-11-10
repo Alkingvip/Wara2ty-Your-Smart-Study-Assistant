@@ -13,7 +13,7 @@ import {
   Send,
   RefreshCw,
   AlertCircle,
-  BookOpen
+  BookOpen,
 } from 'lucide-react';
 
 interface QuizCardProps {
@@ -46,9 +46,8 @@ export const QuizCard: React.FC<QuizCardProps> = ({
   const totalQuestions = questions.length;
   const currentQuestion = questions[currentIndex];
 
-  // Calculate answered count and progress
+  // Calculate answered count
   const answeredCount = Object.keys(selectedAnswers).length;
-  const progressPercent = totalQuestions > 0 ? Math.round(((currentIndex + 1) / totalQuestions) * 100) : 0;
 
   // Handle option selection
   const handleSelectOption = (optionIndex: number) => {
@@ -79,7 +78,7 @@ export const QuizCard: React.FC<QuizCardProps> = ({
     window.scrollTo({ top: 300, behavior: 'smooth' });
   };
 
-  // Restart Quiz (Exact requirement 8: إعادة الاختبار)
+  // Restart Quiz
   const handleRestartQuiz = () => {
     setSelectedAnswers({});
     setIsSubmitted(false);
@@ -87,38 +86,75 @@ export const QuizCard: React.FC<QuizCardProps> = ({
     setReviewFilter('all');
   };
 
-  // Generate 5 fresh questions using real AI integration
+  // Generate 5 fresh questions using real AI integration with multi-model fallback & auto-retry
   const handleRegenerateQuestions = async () => {
     setIsRegenerating(true);
     setApiError(null);
 
+    const maxAttempts = 3;
     try {
-      const response = await fetch('/api/generate-quiz', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          lectureText,
-          lectureTitle,
-          summary,
-        }),
-      });
+      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        const response = await fetch('/api/generate-quiz', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            lectureText,
+            lectureTitle,
+            summary,
+          }),
+        });
 
-      const resData = await response.json();
+        const rawText = await response.text();
+        let resData: any;
+        try {
+          resData = JSON.parse(rawText);
+        } catch {
+          if (attempt < maxAttempts) {
+            await new Promise((r) => setTimeout(r, 1200 * attempt));
+            continue;
+          }
+          throw new Error('الخادم يشهد ضغطاً مؤقتاً حالياً (503). يرجى الضغط على "إعادة المحاولة".');
+        }
 
-      if (!response.ok || !resData.success || !Array.isArray(resData.questions)) {
-        throw new Error(resData.error || 'فشل في توليد أسئلة جديدة من المحاضرة.');
+        if (!response.ok || !resData.success || !Array.isArray(resData.questions)) {
+          const errStr = String(resData.error || '');
+          const is503 =
+            response.status === 503 ||
+            response.status === 429 ||
+            errStr.toLowerCase().includes('503') ||
+            errStr.toLowerCase().includes('high demand') ||
+            errStr.toLowerCase().includes('unavailable');
+
+          if (attempt < maxAttempts && is503) {
+            await new Promise((r) => setTimeout(r, 1200 * attempt));
+            continue;
+          }
+
+          if (is503 || errStr.trim().startsWith('{')) {
+            throw new Error(
+              'خوادم الذكاء الاصطناعي تشهد ذروة طلبات مؤقتة حالياً (503). يرجى الضغط على "إعادة المحاولة" لتوليد الأسئلة فوراً.'
+            );
+          }
+          throw new Error(errStr || 'فشل في توليد أسئلة جديدة من المحاضرة.');
+        }
+
+        if (onQuestionsUpdated) {
+          onQuestionsUpdated(resData.questions);
+        }
+        setSelectedAnswers({});
+        setIsSubmitted(false);
+        setCurrentIndex(0);
+        setReviewFilter('all');
+        return;
       }
-
-      if (onQuestionsUpdated) {
-        onQuestionsUpdated(resData.questions);
-      }
-      setSelectedAnswers({});
-      setIsSubmitted(false);
-      setCurrentIndex(0);
-      setReviewFilter('all');
     } catch (err: any) {
       console.error('Error generating fresh quiz:', err);
-      setApiError(err.message || 'تعذر توليد أسئلة جديدة حالياً. يرجى المحاولة مرة أخرى.');
+      const raw = String(err?.message || '');
+      setApiError(
+        raw.trim().startsWith('{') || raw.toLowerCase().includes('high demand')
+          ? 'خوادم الذكاء الاصطناعي تشهد ذروة طلبات مؤقتة حالياً (503). يرجى الضغط على "إعادة المحاولة".'
+          : raw || 'تعذر توليد أسئلة جديدة حالياً. يرجى المحاولة مرة أخرى.'
+      );
     } finally {
       setIsRegenerating(false);
     }
@@ -154,7 +190,7 @@ export const QuizCard: React.FC<QuizCardProps> = ({
         <button
           onClick={handleRegenerateQuestions}
           disabled={isRegenerating}
-          className="px-6 py-3 rounded-2xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-sm transition shadow-md flex items-center gap-2 mx-auto cursor-pointer"
+          className="px-6 py-3 rounded-2xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-sm transition shadow-md flex items-center gap-2 mx-auto cursor-pointer whitespace-nowrap"
         >
           <Sparkles className="w-4 h-4" />
           <span>{isRegenerating ? 'جاري صياغة الأسئلة...' : 'توليد 5 أسئلة الآن'}</span>
@@ -164,13 +200,21 @@ export const QuizCard: React.FC<QuizCardProps> = ({
   }
 
   return (
-    <div className="space-y-8 animate-fadeIn">
-      
+    <div className="space-y-8">
       {/* API Error Alert */}
       {apiError && (
-        <div className="bg-rose-50 border border-rose-200 text-rose-800 p-4 rounded-2xl flex items-center gap-3 text-sm">
-          <AlertCircle className="w-5 h-5 text-rose-600 flex-shrink-0" />
-          <p>{apiError}</p>
+        <div className="bg-rose-50 border border-rose-200 text-rose-800 p-4 rounded-2xl flex items-center justify-between gap-3 text-sm">
+          <div className="flex items-center gap-3">
+            <AlertCircle className="w-5 h-5 text-rose-600 flex-shrink-0" />
+            <p>{apiError}</p>
+          </div>
+          <button
+            onClick={handleRegenerateQuestions}
+            disabled={isRegenerating}
+            className="px-3 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold transition whitespace-nowrap cursor-pointer"
+          >
+            إعادة المحاولة
+          </button>
         </div>
       )}
 
@@ -183,8 +227,8 @@ export const QuizCard: React.FC<QuizCardProps> = ({
           <div>
             <div className="flex items-center gap-2">
               <h3 className="text-lg font-bold text-white">اختبر نفسك</h3>
-              <span className="text-xs font-semibold px-2.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
-                5 أسئلة اختيار من متعدد
+              <span className="text-xs font-medium text-emerald-400">
+                · 5 أسئلة اختيار من متعدد
               </span>
             </div>
             <p className="text-xs text-slate-400 mt-0.5">
@@ -197,7 +241,7 @@ export const QuizCard: React.FC<QuizCardProps> = ({
         <div className="flex items-center gap-3 w-full sm:w-auto justify-between sm:justify-end border-t sm:border-t-0 border-slate-800 pt-3 sm:pt-0">
           {isSubmitted ? (
             <div className="flex items-center gap-3">
-              <div className="text-right">
+              <div className="text-right tabular-nums">
                 <span className="text-[11px] text-slate-400 block">النتيجة النهائية</span>
                 <span className="text-lg font-black text-emerald-400">
                   {correctCount} / {totalQuestions} ({percentage}%)
@@ -205,7 +249,7 @@ export const QuizCard: React.FC<QuizCardProps> = ({
               </div>
               <button
                 onClick={handleRestartQuiz}
-                className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold border border-slate-700 transition cursor-pointer"
+                className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold border border-slate-700 transition cursor-pointer whitespace-nowrap"
               >
                 <RotateCcw className="w-3.5 h-3.5" />
                 <span>إعادة الاختبار</span>
@@ -213,14 +257,14 @@ export const QuizCard: React.FC<QuizCardProps> = ({
             </div>
           ) : (
             <div className="flex items-center gap-3">
-              <span className="text-xs text-slate-300 bg-slate-800/80 px-3 py-1.5 rounded-xl border border-slate-700">
+              <span className="text-xs text-slate-300 tabular-nums">
                 تمت الإجابة: <strong className="text-emerald-400">{answeredCount}</strong> من {totalQuestions}
               </span>
               <button
                 onClick={handleRegenerateQuestions}
                 disabled={isRegenerating}
                 title="توليد 5 أسئلة جديدة من المحاضرة"
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-medium border border-slate-700 transition cursor-pointer"
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-medium border border-slate-700 transition cursor-pointer whitespace-nowrap"
               >
                 <RefreshCw className={`w-3.5 h-3.5 ${isRegenerating ? 'animate-spin' : ''}`} />
                 <span className="hidden sm:inline">أسئلة جديدة</span>
@@ -233,10 +277,9 @@ export const QuizCard: React.FC<QuizCardProps> = ({
       {/* MODE 1: ACTIVE QUIZ TAKING (Display one question at a time) */}
       {!isSubmitted && currentQuestion && (
         <div className="bg-white rounded-3xl border border-slate-200 p-6 sm:p-9 shadow-sm space-y-7">
-          
-          {/* Progress Indicator Bar (Requirement 4) */}
+          {/* Progress Indicator Bar */}
           <div className="space-y-3">
-            <div className="flex items-center justify-between text-xs text-slate-500 font-semibold">
+            <div className="flex items-center justify-between text-xs text-slate-500 font-semibold tabular-nums">
               <span className="flex items-center gap-2 text-slate-900 font-bold text-sm">
                 <span>السؤال {currentIndex + 1}</span>
                 <span className="text-slate-400 font-normal">من أصل {totalQuestions}</span>
@@ -252,7 +295,7 @@ export const QuizCard: React.FC<QuizCardProps> = ({
               />
             </div>
 
-            {/* Question Quick-Jump Chips (1 to 5) */}
+            {/* Question Quick-Jump Buttons (1 to 5) */}
             <div className="flex items-center justify-center gap-2 sm:gap-3 pt-2">
               {questions.map((q, qIdx) => {
                 const isAnswered = selectedAnswers[q.id] !== undefined;
@@ -263,7 +306,7 @@ export const QuizCard: React.FC<QuizCardProps> = ({
                     key={q.id || qIdx}
                     type="button"
                     onClick={() => setCurrentIndex(qIdx)}
-                    className={`w-10 h-10 rounded-2xl text-xs font-bold transition-all flex items-center justify-center relative cursor-pointer ${
+                    className={`w-10 h-10 rounded-2xl text-xs font-bold transition-all flex items-center justify-center relative cursor-pointer tabular-nums ${
                       isCurrent
                         ? 'bg-slate-900 text-white shadow-md scale-105 ring-2 ring-emerald-500 ring-offset-2'
                         : isAnswered
@@ -284,8 +327,8 @@ export const QuizCard: React.FC<QuizCardProps> = ({
           </div>
 
           {/* Current Question Stem */}
-          <div className="pt-2 space-y-3">
-            <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-slate-100 text-slate-700 text-xs font-bold">
+          <div className="pt-2 space-y-2">
+            <div className="inline-flex items-center gap-2 text-slate-500 text-xs font-bold tabular-nums">
               <BookOpen className="w-3.5 h-3.5 text-emerald-600" />
               <span>سؤال اختيار من متعدد ({currentIndex + 1})</span>
             </div>
@@ -294,7 +337,7 @@ export const QuizCard: React.FC<QuizCardProps> = ({
             </h4>
           </div>
 
-          {/* 4 Answer Options (Requirement 3: exactly 4 options) */}
+          {/* 4 Answer Options */}
           <div className="grid grid-cols-1 gap-3.5 pt-2">
             {currentQuestion.options.map((option, optIdx) => {
               const isSelected = selectedAnswers[currentQuestion.id] === optIdx;
@@ -338,15 +381,14 @@ export const QuizCard: React.FC<QuizCardProps> = ({
             })}
           </div>
 
-          {/* Navigation & Submission Controls (Requirement 5 & 7) */}
+          {/* Navigation & Submission Controls */}
           <div className="pt-6 border-t border-slate-100 flex flex-col sm:flex-row items-center justify-between gap-4">
-            
             {/* Prev button */}
             <button
               type="button"
               onClick={handlePrev}
               disabled={currentIndex === 0}
-              className={`flex items-center gap-2 px-5 py-3 rounded-2xl font-bold text-sm transition cursor-pointer w-full sm:w-auto justify-center ${
+              className={`flex items-center gap-2 px-5 py-3 rounded-2xl font-bold text-sm transition cursor-pointer w-full sm:w-auto justify-center whitespace-nowrap ${
                 currentIndex === 0
                   ? 'text-slate-300 bg-slate-50 border border-slate-200 cursor-not-allowed'
                   : 'text-slate-700 bg-white border border-slate-300 hover:bg-slate-50 shadow-sm'
@@ -356,7 +398,6 @@ export const QuizCard: React.FC<QuizCardProps> = ({
               <span>السؤال السابق</span>
             </button>
 
-            {/* Answered helper status */}
             <span className="text-xs text-slate-400 hidden md:inline">
               يمكنك تغيير إجابتك والتنقل بحرية قبل الضغط على تسليم
             </span>
@@ -367,7 +408,7 @@ export const QuizCard: React.FC<QuizCardProps> = ({
                 <button
                   type="button"
                   onClick={handleNext}
-                  className="flex items-center gap-2 px-6 py-3 rounded-2xl bg-slate-900 hover:bg-slate-800 text-white font-bold text-sm transition shadow-md cursor-pointer w-full sm:w-auto justify-center"
+                  className="flex items-center gap-2 px-6 py-3 rounded-2xl bg-slate-900 hover:bg-slate-800 text-white font-bold text-sm transition shadow-md cursor-pointer w-full sm:w-auto justify-center whitespace-nowrap"
                 >
                   <span>السؤال التالي</span>
                   <ArrowLeft className="w-4 h-4" />
@@ -376,19 +417,18 @@ export const QuizCard: React.FC<QuizCardProps> = ({
                 <button
                   type="button"
                   onClick={handleSubmitQuiz}
-                  className="flex items-center gap-2 px-7 py-3 rounded-2xl bg-emerald-500 hover:bg-emerald-400 active:scale-95 text-slate-950 font-black text-sm transition shadow-lg shadow-emerald-500/25 cursor-pointer w-full sm:w-auto justify-center"
+                  className="flex items-center gap-2 px-7 py-3 rounded-2xl bg-emerald-500 hover:bg-emerald-400 active:scale-95 text-slate-950 font-black text-sm transition shadow-lg shadow-emerald-500/25 cursor-pointer w-full sm:w-auto justify-center whitespace-nowrap"
                 >
                   <Send className="w-4 h-4" />
                   <span>تسليم الإجابات وإنهاء الاختبار</span>
                 </button>
               )}
 
-              {/* Quick Submit button if all answered but on middle question */}
               {currentIndex < totalQuestions - 1 && answeredCount === totalQuestions && (
                 <button
                   type="button"
                   onClick={handleSubmitQuiz}
-                  className="flex items-center gap-1.5 px-4 py-3 rounded-2xl bg-emerald-100 hover:bg-emerald-200 text-emerald-900 font-bold text-xs transition cursor-pointer"
+                  className="flex items-center gap-1.5 px-4 py-3 rounded-2xl bg-emerald-100 hover:bg-emerald-200 text-emerald-900 font-bold text-xs transition cursor-pointer whitespace-nowrap"
                   title="أجبت على كل الأسئلة! يمكنك التسليم الآن"
                 >
                   <Send className="w-3.5 h-3.5" />
@@ -396,49 +436,44 @@ export const QuizCard: React.FC<QuizCardProps> = ({
                 </button>
               )}
             </div>
-
           </div>
-
         </div>
       )}
 
       {/* MODE 2: AFTER SUBMISSION (Score, Breakdown, Explanations, Restart) */}
       {isSubmitted && (
-        <div className="space-y-8 animate-fadeIn">
-          
-          {/* Final Score Banner (Requirement 6: accurately out of 5 and percentage) */}
-          <div className="bg-gradient-to-r from-slate-950 via-slate-900 to-slate-950 border border-emerald-500/30 rounded-3xl p-6 sm:p-9 text-white shadow-xl text-center space-y-6 relative overflow-hidden">
-            <div className="absolute top-0 right-0 w-64 h-64 bg-emerald-500/10 rounded-full blur-3xl pointer-events-none" />
-
+        <div className="space-y-8">
+          {/* Final Score Banner */}
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 sm:p-9 text-white shadow-xl text-center space-y-6 relative overflow-hidden">
             <div className="relative z-10 space-y-3">
-              <div className="w-16 h-16 rounded-3xl bg-emerald-500/20 text-emerald-400 mx-auto flex items-center justify-center border border-emerald-500/30 shadow-inner">
+              <div className="w-16 h-16 rounded-3xl bg-emerald-500/20 text-emerald-400 mx-auto flex items-center justify-center border border-emerald-500/30">
                 <Award className="w-8 h-8" />
               </div>
 
               <div className="space-y-1">
-                <span className="text-xs font-bold text-emerald-400 uppercase tracking-widest bg-emerald-950/80 px-3 py-1 rounded-full border border-emerald-800/40">
+                <span className="text-xs font-bold text-emerald-400">
                   نتيجة اختبار المحاضرة
                 </span>
                 <h4 className="text-2xl sm:text-3xl font-black pt-1">
                   {percentage >= 80
-                    ? '🎉 نتيجة ممتازة ومبهرة!'
+                    ? 'نتيجة ممتازة ومبهرة!'
                     : percentage >= 60
-                    ? '👏 أداء جيد جداً!'
-                    : '📚 تحتاج للمراجعة وإعادة المحاولة'}
+                    ? 'أداء جيد جداً!'
+                    : 'تحتاج للمراجعة وإعادة المحاولة'}
                 </h4>
-                <p className="text-slate-300 text-sm max-w-lg mx-auto">
+                <p className="text-slate-300 text-sm max-w-lg mx-auto tabular-nums">
                   حصلت على <strong className="text-emerald-400 text-lg font-bold">{correctCount}</strong> من أصل{' '}
                   <strong className="text-white text-lg font-bold">{totalQuestions}</strong> أسئلة بنسبة نجاح{' '}
                   <strong className="text-emerald-400 text-lg font-bold">{percentage}%</strong>.
                 </p>
               </div>
 
-              {/* Actions: Restart Quiz (Requirement 8) & Regenerate AI Questions */}
+              {/* Actions: Restart Quiz & Regenerate AI Questions */}
               <div className="flex flex-wrap items-center justify-center gap-3 pt-2">
                 <button
                   type="button"
                   onClick={handleRestartQuiz}
-                  className="px-6 py-3 rounded-2xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black text-sm shadow-md transition cursor-pointer flex items-center gap-2"
+                  className="px-6 py-3 rounded-2xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black text-sm shadow-md transition cursor-pointer flex items-center gap-2 whitespace-nowrap"
                 >
                   <RotateCcw className="w-4 h-4" />
                   <span>إعادة الاختبار</span>
@@ -448,7 +483,7 @@ export const QuizCard: React.FC<QuizCardProps> = ({
                   type="button"
                   onClick={handleRegenerateQuestions}
                   disabled={isRegenerating}
-                  className="px-6 py-3 rounded-2xl bg-slate-800 hover:bg-slate-700 text-white font-bold text-sm border border-slate-700 transition cursor-pointer flex items-center gap-2"
+                  className="px-6 py-3 rounded-2xl bg-slate-800 hover:bg-slate-700 text-white font-bold text-sm border border-slate-700 transition cursor-pointer flex items-center gap-2 whitespace-nowrap"
                 >
                   <Sparkles className="w-4 h-4 text-emerald-400" />
                   <span>{isRegenerating ? 'جاري صياغة أسئلة جديدة...' : 'توليد 5 أسئلة جديدة بالذكاء الاصطناعي'}</span>
@@ -461,11 +496,11 @@ export const QuizCard: React.FC<QuizCardProps> = ({
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-white p-4 rounded-2xl border border-slate-200">
             <div className="flex items-center gap-2">
               <span className="text-xs font-bold text-slate-700">تصفية مراجعة الأسئلة:</span>
-              <div className="flex items-center gap-1.5">
+              <div className="flex items-center gap-1.5 tabular-nums">
                 <button
                   type="button"
                   onClick={() => setReviewFilter('all')}
-                  className={`px-3 py-1.5 rounded-xl text-xs font-bold transition cursor-pointer ${
+                  className={`px-3 py-1.5 rounded-xl text-xs font-bold transition cursor-pointer whitespace-nowrap ${
                     reviewFilter === 'all'
                       ? 'bg-slate-900 text-white'
                       : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
@@ -476,7 +511,7 @@ export const QuizCard: React.FC<QuizCardProps> = ({
                 <button
                   type="button"
                   onClick={() => setReviewFilter('correct')}
-                  className={`px-3 py-1.5 rounded-xl text-xs font-bold transition cursor-pointer ${
+                  className={`px-3 py-1.5 rounded-xl text-xs font-bold transition cursor-pointer whitespace-nowrap ${
                     reviewFilter === 'correct'
                       ? 'bg-emerald-600 text-white'
                       : 'bg-emerald-50 text-emerald-800 hover:bg-emerald-100'
@@ -487,7 +522,7 @@ export const QuizCard: React.FC<QuizCardProps> = ({
                 <button
                   type="button"
                   onClick={() => setReviewFilter('incorrect')}
-                  className={`px-3 py-1.5 rounded-xl text-xs font-bold transition cursor-pointer ${
+                  className={`px-3 py-1.5 rounded-xl text-xs font-bold transition cursor-pointer whitespace-nowrap ${
                     reviewFilter === 'incorrect'
                       ? 'bg-rose-600 text-white'
                       : 'bg-rose-50 text-rose-800 hover:bg-rose-100'
@@ -503,7 +538,7 @@ export const QuizCard: React.FC<QuizCardProps> = ({
             </span>
           </div>
 
-          {/* Detailed Question Review List (Requirement 7) */}
+          {/* Detailed Question Review List */}
           <div className="space-y-6">
             {filteredReviewQuestions.map((q, idx) => {
               const studentAnswer = selectedAnswers[q.id];
@@ -523,7 +558,7 @@ export const QuizCard: React.FC<QuizCardProps> = ({
                   {/* Review Header */}
                   <div className="flex items-start justify-between gap-3">
                     <div className="space-y-1">
-                      <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-2 tabular-nums">
                         <span className="w-6 h-6 rounded-lg bg-slate-900 text-white text-xs font-black flex items-center justify-center">
                           {originalIndex + 1}
                         </span>
@@ -536,16 +571,16 @@ export const QuizCard: React.FC<QuizCardProps> = ({
                       </h4>
                     </div>
 
-                    <div>
+                    <div className="shrink-0">
                       {isCorrect ? (
-                        <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-emerald-100 text-emerald-800 text-xs font-bold border border-emerald-200">
+                        <span className="inline-flex items-center gap-1.5 text-emerald-700 text-xs font-bold">
                           <CheckCircle2 className="w-4 h-4 text-emerald-600" />
-                          إجابة صحيحة
+                          <span>إجابة صحيحة</span>
                         </span>
                       ) : (
-                        <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-rose-100 text-rose-800 text-xs font-bold border border-rose-200">
+                        <span className="inline-flex items-center gap-1.5 text-rose-700 text-xs font-bold">
                           <XCircle className="w-4 h-4 text-rose-600" />
-                          {hasAnswered ? 'إجابة خاطئة' : 'لم يتم الإجابة'}
+                          <span>{hasAnswered ? 'إجابة خاطئة' : 'لم يتم الإجابة'}</span>
                         </span>
                       )}
                     </div>
@@ -558,19 +593,19 @@ export const QuizCard: React.FC<QuizCardProps> = ({
                       const isStudentChoice = optIdx === studentAnswer;
 
                       let style = 'bg-slate-50 border-slate-200 text-slate-600 opacity-60';
-                      let badge = null;
+                      let statusLabel = null;
 
                       if (isCorrectChoice) {
-                        style = 'bg-emerald-50 border-emerald-500 text-emerald-950 font-bold ring-2 ring-emerald-400/30';
-                        badge = (
-                          <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-emerald-200/80 text-emerald-900">
+                        style = 'bg-emerald-50 border-emerald-500 text-emerald-950 font-bold';
+                        statusLabel = (
+                          <span className="text-[11px] font-bold text-emerald-800 whitespace-nowrap shrink-0">
                             الإجابة الصحيحة ✓
                           </span>
                         );
                       } else if (isStudentChoice && !isCorrectChoice) {
-                        style = 'bg-rose-50 border-rose-400 text-rose-950 font-semibold ring-2 ring-rose-300/30';
-                        badge = (
-                          <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-rose-200 text-rose-900">
+                        style = 'bg-rose-50 border-rose-400 text-rose-950 font-semibold';
+                        statusLabel = (
+                          <span className="text-[11px] font-bold text-rose-800 whitespace-nowrap shrink-0">
                             إجابتك المختارة ✗
                           </span>
                         );
@@ -595,13 +630,13 @@ export const QuizCard: React.FC<QuizCardProps> = ({
                             </span>
                             <span className="leading-relaxed">{option}</span>
                           </div>
-                          {badge}
+                          {statusLabel}
                         </div>
                       );
                     })}
                   </div>
 
-                  {/* Arabic Educational Explanation (Requirement 7) */}
+                  {/* Arabic Educational Explanation */}
                   <div className="mt-4 p-4 rounded-2xl bg-slate-50 border border-slate-200 space-y-1.5">
                     <div className="flex items-center gap-2 text-xs font-bold text-slate-700">
                       <Sparkles className="w-3.5 h-3.5 text-emerald-600" />
@@ -611,15 +646,12 @@ export const QuizCard: React.FC<QuizCardProps> = ({
                       {q.explanation}
                     </p>
                   </div>
-
                 </div>
               );
             })}
           </div>
-
         </div>
       )}
-
     </div>
   );
 };
